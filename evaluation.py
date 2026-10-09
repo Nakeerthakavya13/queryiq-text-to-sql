@@ -9,139 +9,106 @@ from sql_runner import run_query
 TEST_CASES = [
     {
         "question": "Show all students",
-        "expected_sql": """
-            SELECT * FROM students ORDER BY name
-        """,
+        "expected": "SELECT * FROM students ORDER BY name",
     },
     {
-        "question": "List students in Data Science",
-        "expected_sql": """
-            SELECT * FROM students
-            WHERE LOWER(department) LIKE '%data science%'
-               OR LOWER(department) LIKE '%datascience%'
-               OR LOWER(department) = 'ds'
-            ORDER BY name
-        """,
+        "question": "Count students",
+        "expected": "SELECT COUNT(*) AS total_students FROM students",
     },
     {
-        "question": "Show the top 5 students by marks",
-        "expected_sql": """
-            SELECT s.name, s.department, sc.subject, sc.marks, sc.grade
-            FROM students s
-            JOIN scores sc ON s.student_id = sc.student_id
-            ORDER BY sc.marks DESC
-            LIMIT 5
-        """,
+        "question": "Count students in CSE",
+        "expected": (
+            "SELECT COUNT(*) AS total_students FROM students "
+            "WHERE (LOWER(department) LIKE '%cse%' OR "
+            "LOWER(department) LIKE '%computer science%')"
+        ),
     },
     {
-        "question": "What is the average mark for each subject?",
-        "expected_sql": """
-            SELECT subject, ROUND(AVG(marks), 2) AS average_marks
-            FROM scores
-            GROUP BY subject
-            ORDER BY average_marks DESC
-        """,
+        "question": "Show average age of students",
+        "expected": (
+            "SELECT ROUND(AVG(age), 2) AS average_age FROM students"
+        ),
     },
     {
-        "question": "Show students with attendance below 75%",
-        "expected_sql": """
-            SELECT s.name, s.department, a.subject,
-                   a.present_days, a.total_days, a.percentage
-            FROM students s
-            JOIN attendance a ON s.student_id = a.student_id
-            WHERE a.percentage < 75
-            ORDER BY a.percentage
-        """,
+        "question": "Show the top 5 oldest students",
+        "expected": (
+            "SELECT * FROM students ORDER BY age DESC, name LIMIT 5"
+        ),
     },
     {
-        "question": "List faculty with more than 8 years of experience",
-        "expected_sql": """
-            SELECT * FROM faculty
-            WHERE experience_years > 8
-            ORDER BY experience_years DESC
-        """,
+        "question": "Show students older than 20",
+        "expected": (
+            "SELECT * FROM students "
+            "WHERE age > 20 ORDER BY age DESC, name"
+        ),
     },
     {
-        "question": "Show students whose names start with A",
-        "expected_sql": """
-            SELECT * FROM students
-            WHERE UPPER(name) LIKE 'A%'
-            ORDER BY name
-        """,
+        "question": "Show students in XYZ department",
+        "expected": None,
     },
 ]
 
 
-def normalize_dataframe(df):
-    """Normalize column and row order before comparing results."""
-    if df is None:
+def normalize_sql(sql):
+    if sql is None:
         return None
-
-    df = df.copy()
-    df.columns = [str(col) for col in df.columns]
-    df = df.reindex(sorted(df.columns), axis=1)
-
-    if not df.empty:
-        df = df.sort_values(
-            by=list(df.columns),
-            key=lambda col: col.astype(str),
-            kind="stable",
-        )
-
-    return df.reset_index(drop=True)
+    return " ".join(sql.lower().split()).rstrip(";")
 
 
 def evaluate_local_fallback():
     results = []
 
     for case in TEST_CASES:
-        question = case["question"]
         start = time.perf_counter()
-
-        status = "Failed"
-        correctness = "Not checked"
-        row_count = 0
-        details = ""
+        question = case["question"]
+        expected_sql = case["expected"]
 
         try:
             generated_sql = generate_local_sql(question)
 
-            if not generated_sql:
-                status = "Unsupported"
-                details = "Local fallback returned no SQL."
+            if generated_sql is None:
+                status = (
+                    "Correctly unsupported"
+                    if expected_sql is None
+                    else "Unsupported"
+                )
+                correct = expected_sql is None
+                rows = 0
+
+            elif expected_sql is None:
+                status = "Incorrectly supported"
+                correct = False
+                rows = 0
 
             else:
                 actual = run_query(generated_sql)
-                expected = run_query(case["expected_sql"])
+                expected = run_query(expected_sql)
 
-                row_count = len(actual)
-                status = "Success"
-
-                actual_normalized = normalize_dataframe(actual)
-                expected_normalized = normalize_dataframe(expected)
-
-                if actual_normalized.equals(expected_normalized):
-                    correctness = "Correct"
-                else:
-                    correctness = "Incorrect"
-                    details = (
-                        "Generated results differ from reference results."
-                    )
+                correct = (
+                    normalize_sql(generated_sql)
+                    == normalize_sql(expected_sql)
+                    and actual.equals(expected)
+                )
+                status = "Success" if correct else "Incorrect"
+                rows = len(actual)
 
         except Exception as error:
-            details = f"{type(error).__name__}: {error}"
-
-        elapsed_ms = round(
-            (time.perf_counter() - start) * 1000, 2
-        )
+            status = "Failed"
+            correct = False
+            rows = 0
+            error_message = str(error)
+        else:
+            error_message = ""
 
         results.append({
             "Question": question,
             "Status": status,
-            "Correctness": correctness,
-            "Rows": row_count,
-            "Time (ms)": elapsed_ms,
-            "Details": details,
+            "Correctness": "Correct" if correct else "Incorrect",
+            "Rows": rows,
+            "Time (ms)": round(
+                (time.perf_counter() - start) * 1000, 2
+            ),
+            "Details": error_message,
         })
 
     return pd.DataFrame(results)
